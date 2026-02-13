@@ -22,22 +22,44 @@ Key options:
 
 ### `build_target.py`
 
-Provides a fuzzy-search interface (powered by `InquirerPy`) to select a target and kick off a `cmake --build` command. It can also run non-interactively when a target name is supplied.
+Provides a fuzzy-search interface (powered by `InquirerPy`) to select a target and store the selection in the `TB_BUILD_TARGET` environment variable for later use. It can also run non-interactively when a target name is supplied.
 
 Examples:
 
 ```
-# Interactive fuzzy prompt
+# Interactive fuzzy prompt that sets TB_BUILD_TARGET
 python3 cmake/build_target.py -B build --config-name Debug
 
-# Dry-run to preview the command
-python3 cmake/build_target.py -B build --config-name Debug --dry-run
-
-# Direct build without prompt
+# Non-interactive selection that sets TB_BUILD_TARGET directly
 python3 cmake/build_target.py -B build --config-name Debug --target TrenchBroom
 ```
 
+### `select_target.py`
+
+Provides a fuzzy-search interface identical to `build_target.py`, but writes the selected target to a file so other processes can consume it later. You can also skip the prompt by supplying `--target`.
+
+```
+# Interactive selection written to /tmp/tb_target.txt
+python3 cmake/select_target.py -B build --config-name Debug --output /tmp/tb_target.txt
+
+# Non-interactive selection that overwrites the target file
+python3 cmake/select_target.py -B build --config-name Debug --target TrenchBroom --output /tmp/tb_target.txt
+```
+
+### `build_selected_target.py`
+
+Reads a target name from a file (typically produced by `select_target.py`) and runs `cmake --build` for that target, respecting generator configs and parallel job settings.
+
+```
+# Preview the build command
+python3 cmake/build_selected_target.py --target-file /tmp/tb_target.txt -B build --config-name Debug --dry-run
+
+# Execute the build with 8 parallel jobs
+python3 cmake/build_selected_target.py --target-file /tmp/tb_target.txt -B build --config-name Debug -j 8
+```
+
 ## Managing dependencies with uv
+
 
 The Python utilities use [`uv`](https://github.com/astral-sh/uv) for dependency management. The project metadata lives in the repository root `pyproject.toml`, which declares the required packages (currently `InquirerPy>=0.3.4`).
 
@@ -78,4 +100,5 @@ Common workflows:
 
 - The scripts expect that you have already configured the CMake build directory (e.g., via `cmake -S . -B build`).
 - If you switch generators or configurations, re-run `cmake` so the File API replies stay up-to-date.
-- Use `--dry-run` in `build_target.py` to confirm the command before launching a long build.
+- After running `build_target.py`, read the `TB_BUILD_TARGET` environment variable to decide which target to pass to downstream build commands.
+- Use `select_target.py` together with `build_selected_target.py` when you want to persist the selection in a file and kick off the build later (even from another shell or CI step).

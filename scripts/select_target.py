@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Interactive helper that lists CMake targets via list_cmake_targets.py,
-lets you pick one with an InquirerPy fuzzy prompt, and then builds that target.
+lets you pick one with an InquirerPy fuzzy prompt, and writes the selection
+to a user-provided file for later use.
 """
 
 from __future__ import annotations
 
 import argparse
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +24,7 @@ except ModuleNotFoundError as exc:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Interactively select a CMake target with an InquirerPy fuzzy prompt and build it."
+            "Interactively select a CMake target with an InquirerPy fuzzy prompt and write it to a specified file."
         )
     )
     parser.add_argument(
@@ -46,26 +46,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--cmake",
-        default="cmake",
-        help="Path to the CMake executable used for building (default: %(default)s).",
+        "--output",
+        required=True,
+        help="File path where the selected target name will be written.",
     )
-    parser.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
-        default=None,
-        help="Number of parallel build jobs to pass to CMake.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show the build command without executing it.",
-    )
+
     parser.add_argument(
         "--target",
         default=None,
-        help="Skip the interactive prompt and build this target directly (use 'all' to rebuild everything).",
+        help="Skip the interactive prompt and store this target directly (use 'all' to select everything).",
     )
     return parser.parse_args()
 
@@ -90,22 +79,10 @@ def main() -> None:
     else:
         target = prompt_for_target(targets)
 
-    build_cmd = compose_build_command(
-        args.cmake, build_dir, target, args.config_name, args.jobs
-    )
-
-    print("Building target with command:")
-    print("  ", " ".join(shlex.quote(part) for part in build_cmd))
-
-    if args.dry_run:
-        return
-
-    try:
-        subprocess.run(build_cmd, check=True)
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit(
-            f"CMake exited with status {exc.returncode} while building '{target}'."
-        ) from exc
+    output_path = Path(args.output).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(f"{target}\n", encoding="utf-8")
+    print(f"Wrote selected target '{target}' to {output_path}.")
 
 
 def fetch_targets(
@@ -174,24 +151,6 @@ def resolve_choice(choice: str, targets: Sequence[str]) -> str | None:
     if len(matches) == 1:
         return matches[0]
     return None
-
-
-def compose_build_command(
-    cmake_exe: str,
-    build_dir: Path,
-    target: str,
-    config_name: str | None,
-    jobs: int | None,
-) -> List[str]:
-    cmd = [cmake_exe, "--build", str(build_dir), "--target", target]
-    if config_name:
-        cmd.extend(["--config", config_name])
-    if jobs:
-        cmd.extend(["-j", str(jobs)])
-    return cmd
-
-
-
 
 
 if __name__ == "__main__":
