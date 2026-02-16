@@ -36,14 +36,15 @@ python3 cmake/build_target.py -B build --config-name Debug --target TrenchBroom
 
 ### `select_target.py`
 
-Provides a fuzzy-search interface identical to `build_target.py`, but writes the selected target to a file so other processes can consume it later. You can also skip the prompt by supplying `--target`.
+Provides the same fuzzy-search experience as `build_target.py`, writes the chosen target to a file for other stages to consume, and whenever the target is an executable it also (re)generates a `debug.json` inside `.zed/` so Zed’s CodeLLDB adapter can launch it immediately. Use `--target` to skip the prompt, `--zed-debug-path` to pick a different output file, and `--cmake`/`--jobs` to control the build command recorded in that debug profile.
 
 ```
-# Interactive selection written to /tmp/tb_target.txt
-python3 cmake/select_target.py -B build --config-name Debug --output /tmp/tb_target.txt
+# Interactive selection persisted to /tmp/tb_target.txt
+# and (for executable targets) mirrored into .zed/debug.json
+python3 cmake/select_target.py -B build --config-name Debug --output /tmp/tb_target.txt --zed-debug-path .zed/debug.json
 
-# Non-interactive selection that overwrites the target file
-python3 cmake/select_target.py -B build --config-name Debug --target TrenchBroom --output /tmp/tb_target.txt
+# Non-interactive selection that overwrites the target file and Zed config
+python3 cmake/select_target.py -B build --config-name Debug --target TrenchBroom --output /tmp/tb_target.txt --zed-debug-path .zed/debug.json -j 8
 ```
 
 ### `build_selected_target.py`
@@ -57,6 +58,19 @@ python3 cmake/build_selected_target.py --target-file /tmp/tb_target.txt -B build
 # Execute the build with 8 parallel jobs
 python3 cmake/build_selected_target.py --target-file /tmp/tb_target.txt -B build --config-name Debug -j 8
 ```
+
+### `run_tests.py`
+
+Executes the currently selected target as a Catch2 suite, automatically discovering the executable via the CMake File API and fanning tests out across every available logical CPU using Catch2’s sharding flags. You can pass additional Catch2 options after `--`.
+
+```
+# Run all shards (defaults to the machine's core count)
+python3 cmake/run_tests.py --target-file /tmp/tb_target.txt -B build --config-name Debug
+
+# Force a smaller shard count and forward extra Catch2 filters
+python3 cmake/run_tests.py --target-file /tmp/tb_target.txt -B build --shards 4 -- --success --abort
+```
+
 
 ## Managing dependencies with uv
 
@@ -101,4 +115,5 @@ Common workflows:
 - The scripts expect that you have already configured the CMake build directory (e.g., via `cmake -S . -B build`).
 - If you switch generators or configurations, re-run `cmake` so the File API replies stay up-to-date.
 - After running `build_target.py`, read the `TB_BUILD_TARGET` environment variable to decide which target to pass to downstream build commands.
-- Use `select_target.py` together with `build_selected_target.py` when you want to persist the selection in a file and kick off the build later (even from another shell or CI step).
+- Use `select_target.py` together with `build_selected_target.py` when you want to persist the selection in a file, kick off the build later (even from another shell or CI step), and keep Zed’s CodeLLDB debug configuration in sync for executable targets.
+- Invoke `run_tests.py` after building the target to run Catch2 suites in parallel shards; pass `--` followed by Catch2 flags to narrow or expand the test selection as needed.

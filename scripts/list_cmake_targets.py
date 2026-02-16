@@ -92,19 +92,38 @@ def main() -> None:
 
     ensure_query(build_dir)
 
+    cmake_args = normalize_cmake_args(args.cmake_args)
+
     if args.refresh:
-        source_dir = (
-            Path(args.source_dir).resolve()
-            if args.source_dir
-            else Path(__file__).resolve().parent
+        source_dir = resolve_source_dir(
+            build_dir, args.source_dir, fallback_to_script=True
         )
-        cmake_args = normalize_cmake_args(args.cmake_args)
         run_cmake(args.cmake, source_dir, build_dir, args.generator, cmake_args)
 
     try:
         targets, config_name = read_targets_from_file_api(build_dir, args.config_name)
     except CMakeFileAPIError as exc:
-        raise SystemExit(f"Error: {exc}") from exc
+        if args.refresh:
+            raise SystemExit(f"Error: {exc}") from exc
+
+        try:
+            source_dir = resolve_source_dir(
+                build_dir, args.source_dir, fallback_to_script=False
+            )
+        except CMakeFileAPIError as source_exc:
+            raise SystemExit(f"Error: {exc}. {source_exc}") from source_exc
+
+        try:
+            run_cmake(args.cmake, source_dir, build_dir, args.generator, cmake_args)
+        except CMakeFileAPIError as refresh_exc:
+            raise SystemExit(f"Error: {refresh_exc}") from refresh_exc
+
+        try:
+            targets, config_name = read_targets_from_file_api(
+                build_dir, args.config_name
+            )
+        except CMakeFileAPIError as retry_exc:
+            raise SystemExit(f"Error: {retry_exc}") from retry_exc
 
     filtered_targets = filter_targets_by_type(targets, ALLOWED_TYPES)
     if not filtered_targets:
@@ -151,6 +170,34 @@ def ensure_query(build_dir: Path) -> Path:
         query_file.write_text(json.dumps(desired_query, indent=2) + "\n")
 
     return query_file
+
+
+def resolve_source_dir(
+    build_dir: Path, requested: str | None, fallback_to_script: bool
+) -> Path:
+    if requested:
+        return Path(requested).resolve()
+
+    cache_path = build_dir / "CMakeCache.txt"
+    if cache_path.is_file():
+        try:
+            for line in cache_path.read_text().splitlines():
+                if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                    _, value = line.split("=", 1)
+                    if value:
+                        return Path(value).resolve()
+        except OSError as exc:
+            raise CMakeFileAPIError(
+                f"Unable to read '{cache_path}': {exc.strerror or exc}"
+            ) from exc
+
+    if fallback_to_script:
+        return Path(__file__).resolve().parent
+
+    raise CMakeFileAPIError(
+        "Unable to determine the source directory for refreshing the File API. "
+        "Provide --source-dir."
+    )
 
 
 def run_cmake(
@@ -215,9 +262,7 @@ def load_index_data(reply_dir: Path) -> dict[str, Any]:
 
     if last_error is not None:
         raise last_error
-    raise CMakeFileAPIError(
-        f"Failed to read any valid index files from '{reply_dir}'."
-    )
+    raise CMakeFileAPIError(f"Failed to read any valid index files from '{reply_dir}'.")
 
 
 def locate_codemodel_reply(index_data: dict[str, Any]) -> str:
@@ -233,14 +278,18 @@ def locate_codemodel_reply(index_data: dict[str, Any]) -> str:
 
             responses = client_data.get("responses")
             if isinstance(responses, list):
-                candidates.extend(entry for entry in responses if isinstance(entry, dict))
+                candidates.extend(
+                    entry for entry in responses if isinstance(entry, dict)
+                )
 
             for value in client_data.values():
                 if isinstance(value, dict):
                     nested_responses = value.get("responses")
                     if isinstance(nested_responses, list):
                         candidates.extend(
-                            entry for entry in nested_responses if isinstance(entry, dict)
+                            entry
+                            for entry in nested_responses
+                            if isinstance(entry, dict)
                         )
 
     objects_section = index_data.get("objects")
@@ -291,7 +340,9 @@ def load_targets(
     if target_refs is None:
         return targets
     if not isinstance(target_refs, list):
-        raise CMakeFileAPIError("Codemodel configuration 'targets' entry is not a list.")
+        raise CMakeFileAPIError(
+            "Codemodel configuration 'targets' entry is not a list."
+        )
 
     for target_ref in target_refs:
         if not isinstance(target_ref, dict):
@@ -345,9 +396,7 @@ def load_json(path: Path) -> dict[str, Any]:
         ) from exc
 
     if not isinstance(data, dict):
-        raise CMakeFileAPIError(
-            f"File '{path}' does not contain a JSON object."
-        )
+        raise CMakeFileAPIError(f"File '{path}' does not contain a JSON object.")
 
     return data
 
