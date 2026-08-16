@@ -71,6 +71,41 @@ python3 cmake/run_tests.py --target-file /tmp/tb_target.txt -B build --config-na
 python3 cmake/run_tests.py --target-file /tmp/tb_target.txt -B build --shards 4 -- --success --abort
 ```
 
+### `cherry_pick_pr.py`
+
+Cherry-picks the merge commits of one or more merged pull requests onto a base branch, builds and tests the result, and opens a single pull request for them against the base branch. Run it from the TrenchBroom repository (or point it there with `-C`). Requires the [GitHub CLI](https://cli.github.com).
+
+The pull requests are cherry-picked in the order in which they are given. The new branch is named `cp-<number>-<number>...`, the new pull request is titled `Cherry Pick #<number> #<number>...`, and its body lists the cherry-picked pull requests, which GitHub renders with their titles:
+
+```
+- #5373
+- #5389
+```
+
+If the branch already exists and is checked out, for example because an earlier run stopped at a failing build, the script offers to continue with the build, the tests and the pull request instead of cherry-picking again. Such a resumed run needs no `--base`: the base branch is recorded in `branch.<name>.cherryPickBase` when the cherry-pick branch is created.
+
+When a cherry-pick conflicts, the script prints the unmerged files and waits: resolve the conflicts and `git add` them in another terminal, then answer `c` to continue, `s` to skip the commit, or `a` to abort, which deletes the branch with everything that was cherry-picked onto it so far. If you ran `git cherry-pick --continue` (or `--abort`) yourself instead, the script notices on the next keypress and carries on; a branch that ends up without any commits beyond the base branch stops it rather than opening an empty pull request. If the build or the tests fail, it stops with the branch checked out so the failure can be fixed, after which it can be rerun with `--skip-build`.
+
+```
+# Cherry-pick pull request 5373 onto the checked out branch
+python3 ../TrenchBroom-dev-tools/scripts/cherry_pick_pr.py 5373
+
+# Cherry-pick three pull requests onto a release branch in one go
+python3 ../TrenchBroom-dev-tools/scripts/cherry_pick_pr.py -b releases/2026.2 5373 5389 5393
+
+# Skip the build and the tests, for example after fixing a failure by hand
+python3 ../TrenchBroom-dev-tools/scripts/cherry_pick_pr.py --skip-build 5373 5389
+```
+
+Key options:
+
+- `-b/--base`: Base branch to cherry-pick onto (default: the base branch recorded for the checked out branch, otherwise the checked out branch itself).
+- `-B/--build-dir`: Path to the configured CMake build directory (default: `build`).
+- `-C/--repo`: Path inside the TrenchBroom repository (default: the working directory).
+- `-j/--jobs`: Number of tests to run in parallel (default: as many as possible; `ctest` runs them serially without this).
+- `--skip-build`: Skip the build and the tests.
+- `-y/--yes`: Do not ask before pushing the branch and creating the pull request.
+
 
 ## Managing dependencies with uv
 
