@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Cherry-pick merged pull requests onto a base branch and open a pull request.
+Cherry-pick merged pull requests onto a base branch and open a pull request for
+each of them.
 
-Creates a branch named cp-<number>-<number>... off the base branch, cherry-picks
-the merge commit of every given pull request onto it in the given order (pausing
-so you can resolve conflicts), builds the CMake build tree, runs the tests, and
-finally pushes the branch and opens a pull request titled "Cherry Pick #<number>
-#<number>..." against the base branch, listing the cherry-picked pull requests in
-its body.
+For every given pull request, in the given order, creates a branch named
+cp-<number> off the base branch, cherry-picks the pull request's merge commit
+onto it (pausing so you can resolve conflicts), builds the CMake build tree,
+runs the tests, and pushes the branch and opens a pull request against the base
+branch. The new pull request reuses the original's title and description, with
+a "Cherry-picked from #<number>" line appended after a blank line.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ class PullRequest:
     number: int
     state: str
     title: str
+    body: str
     branch: str
     merge_commit: str
 
@@ -47,8 +49,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs="+",
         metavar="pr-number",
-        help="Numbers of the merged pull requests to cherry-pick, in the order in "
-        "which they should be applied.",
+        help="Numbers of the merged pull requests to cherry-pick, each onto its own "
+        "branch and pull request, in the order in which they should be processed.",
     )
     parser.add_argument(
         "-b",
@@ -135,24 +137,45 @@ def main() -> None:
         ensure_commit_available(repo, pull_request)
         pull_requests.append(pull_request)
 
-    # The cherry-pick branch can already exist because an earlier run stopped at a
-    # failing build or test. If it is checked out, continue where that run left off.
-    branch = cherry_pick_branch_name(repo, pull_requests)
+    for pull_request in pull_requests:
+        cherry_pick_pull_request(repo, base_branch, build_dir, pull_request, args)
+
+
+def cherry_pick_pull_request(
+    repo: Path,
+    base_branch: str,
+    build_dir: Path,
+    pull_request: PullRequest,
+    args: argparse.Namespace,
+) -> None:
+    branch = cherry_pick_branch_name(repo, pull_request)
+
+    # The cherry-pick branch can already exist locally because an earlier run
+    # stopped at a failing build or test. If it is checked out, continue where
+    # that run left off. Otherwise, a same-named branch left over on origin from
+    # an unrelated, earlier cherry-pick of this pull request would collide with
+    # the push below, so offer to clear it out of the way first.
     resuming = branch_exists(repo, branch)
+    if not resuming and remote_branch_exists(repo, branch):
+        print(f"origin/{branch} already exists.")
+        if not confirm(f"Delete origin/{branch} and continue?", assume_yes=False):
+            raise SystemExit("Aborted.")
+        announce(f"Deleting origin/{branch}")
+        git(repo, "push", "origin", "--delete", branch)
+
     if resuming and current_branch(repo) != branch:
         raise SystemExit(f"Branch already exists: {branch}")
     if base_branch == branch:
         raise SystemExit(
-            f"{branch} is the cherry-pick branch for the given pull requests, not a "
-            "base branch. Pass the branch to cherry-pick onto with --base."
+            f"{branch} is the cherry-pick branch for pull request #{pull_request.number}, "
+            "not a base branch. Pass the branch to cherry-pick onto with --base."
         )
 
     print()
-    for pull_request in pull_requests:
-        print(
-            f"#{pull_request.number}: {pull_request.title} "
-            f"({describe(repo, pull_request.merge_commit)})"
-        )
+    print(
+        f"#{pull_request.number}: {pull_request.title} "
+        f"({describe(repo, pull_request.merge_commit)})"
+    )
     print(f"cherry-pick branch: {branch}")
     print(f"base branch:        {base_branch}")
 
@@ -167,12 +190,11 @@ def main() -> None:
         announce(f"Creating branch {branch}")
         git(repo, "switch", "-c", branch, base_branch)
 
-        for pull_request in pull_requests:
-            announce(
-                f"Cherry-picking {pull_request.merge_commit} of "
-                f"pull request #{pull_request.number}"
-            )
-            cherry_pick(repo, base_branch, branch, pull_request.merge_commit)
+        announce(
+            f"Cherry-picking {pull_request.merge_commit} of "
+            f"pull request #{pull_request.number}"
+        )
+        cherry_pick(repo, base_branch, branch, pull_request.merge_commit)
 
     # Remember the base branch so that a resumed run finds it again even though the
     # cherry-pick branch is then the checked out branch.
@@ -220,9 +242,9 @@ def main() -> None:
             "--head",
             branch,
             "--title",
-            pull_request_title(pull_requests),
+            pull_request_title(pull_request),
             "--body",
-            pull_request_body(pull_requests),
+            pull_request_body(pull_request),
         ],
         cwd=repo,
         message="Creating the pull request failed.",
@@ -298,6 +320,10 @@ def branch_exists(repo: Path, branch: str) -> bool:
     )
 
 
+def remote_branch_exists(repo: Path, branch: str) -> bool:
+    return git_status(repo, "ls-remote", "--exit-code", "--heads", "origin", branch) == 0
+
+
 def warn_if_behind_origin(repo: Path, base_branch: str, assume_yes: bool) -> None:
     if (
         git_status(
@@ -326,7 +352,7 @@ def read_pull_request(repo: Path, pr_number: int) -> PullRequest:
             "view",
             str(pr_number),
             "--json",
-            "state,title,headRefName,mergeCommit",
+            "state,title,body,headRefName,mergeCommit",
         ],
         cwd=repo,
         capture_output=True,
@@ -343,6 +369,7 @@ def read_pull_request(repo: Path, pr_number: int) -> PullRequest:
         number=pr_number,
         state=data.get("state") or "UNKNOWN",
         title=data.get("title") or "",
+        body=data.get("body") or "",
         branch=data.get("headRefName") or "",
         merge_commit=merge_commit.get("oid") or "",
     )
@@ -358,20 +385,21 @@ def ensure_commit_available(repo: Path, pull_request: PullRequest) -> None:
         )
 
 
-def cherry_pick_branch_name(repo: Path, pull_requests: Sequence[PullRequest]) -> str:
-    branch = "cp-" + "-".join(str(each.number) for each in pull_requests)
+def cherry_pick_branch_name(repo: Path, pull_request: PullRequest) -> str:
+    branch = f"cp-{pull_request.number}"
     if git_status(repo, "check-ref-format", f"refs/heads/{branch}") != 0:
         raise SystemExit(f"Invalid branch name: {branch}")
     return branch
 
 
-def pull_request_title(pull_requests: Sequence[PullRequest]) -> str:
-    return "Cherry Pick " + " ".join(f"#{each.number}" for each in pull_requests)
+def pull_request_title(pull_request: PullRequest) -> str:
+    return pull_request.title
 
 
-def pull_request_body(pull_requests: Sequence[PullRequest]) -> str:
-    # GitHub expands the reference to the pull request's title by itself.
-    return "\n".join(f"- #{each.number}" for each in pull_requests)
+def pull_request_body(pull_request: PullRequest) -> str:
+    cherry_picked_from = f"Cherry-picked from #{pull_request.number}"
+    body = pull_request.body.strip()
+    return f"{body}\n\n{cherry_picked_from}" if body else cherry_picked_from
 
 
 def cherry_pick(repo: Path, base_branch: str, branch: str, merge_commit: str) -> None:
